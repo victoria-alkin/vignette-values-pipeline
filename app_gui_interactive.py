@@ -1,4 +1,4 @@
-# app.py — Step 1: env check + input upload/preview
+# app.py — env check and input upload/preview
 import os
 from pathlib import Path
 import pandas as pd
@@ -99,7 +99,7 @@ RATING_LABELS = [
     "Neutral","Slightly Promotes","Moderately Promotes","Strongly Promotes",
 ]
 
-# Pick the palette you want to mirror. This one matches your Excel summary workbook.
+# Rating colors
 RATING_COLORS = {
     "Neutral":               "#E0E0E0",
     "Slightly Promotes":     "#D2F8DC",
@@ -124,7 +124,7 @@ def style_likert(df: pd.DataFrame) -> Styler:
     like_cols = _detect_likert_columns(df)
     styler = df.style
     if not like_cols:
-        return styler  # nothing to color
+        return styler
     def color_cell(v):
         return f"background-color: {RATING_COLORS.get(str(v), '')}"
     return styler.applymap(color_cell, subset=like_cols)
@@ -157,7 +157,7 @@ def build_summary_workbook(run_dir: Path) -> Path:
         (decisions_dir / "decisions_rated_all.csv",      "decisions_rated_all"),
     ]
 
-    # Ratings palette (exact-capitalization labels)
+    # Ratings palette
     rating_labels = [
         "Strongly Counteracts",
         "Moderately Counteracts",
@@ -217,7 +217,7 @@ def build_summary_workbook(run_dir: Path) -> Path:
                 ws.autofilter(0, 0, nrows, ncols - 1)
             ws.freeze_panes(1, 0)
 
-            # Reasonable column widths
+            # Column widths
             for c, col in enumerate(df.columns):
                 width = min(50, max(10, int(df[col].astype(str).map(len).max() if len(df) else 10)))
                 ws.set_column(c, c, width)
@@ -264,7 +264,7 @@ def build_summary_workbook(run_dir: Path) -> Path:
                     "format": bold_fmt
                 })
 
-        # Helper: color rating columns that contain ONLY the known labels
+        # Helper: color rating columns that contain only the known labels
         def color_rating_columns(ws, df: pd.DataFrame, start_row=1, start_col=0):
             nrows, ncols = df.shape
             if nrows == 0 or ncols == 0:
@@ -301,7 +301,7 @@ def build_summary_workbook(run_dir: Path) -> Path:
         # Write each available sheet with appropriate styling
         for sheet, df in loaded:
             if sheet.startswith("decisions_rated") or sheet == "decisions_extracted":
-                df = sort_vignette_then_decision(df)  # NEW
+                df = sort_vignette_then_decision(df)
             ws, nrows, ncols = write_df(sheet, df)
 
             # Bolding for factors_classified_* sheets
@@ -366,7 +366,7 @@ def read_table(uploaded_file) -> pd.DataFrame:
 
 if uploaded:
     try:
-        # Clear only if it's a NEW file (filename changed)
+        # Clear only if it's a new file (filename changed)
         is_new_file = (st.session_state.get("input_name") != uploaded.name)
         if is_new_file:
             stale_keys = [
@@ -423,7 +423,7 @@ else:
         st.caption("Output: one row per vignette with columns: vignette_id, scope, predicted_flags.")
 
     if st.button("Run vignette type classifier", type="primary", disabled=(status != "success")):
-        # Lazy import so initial app load is fast
+        # Lazy import to increase speed of initial app load
         from vignette_type_classifier import run_vignette_type_classifier
 
         # Prepare run directory
@@ -449,7 +449,7 @@ else:
             except Exception as e:
                 st.error(f"Vignette type classifier failed: {e}")
 
-# --- Persistent preview for Step 1 (always shows if we have output) ---
+# --- Persistent preview for Step 1 ---
 if "vignette_scope_csv" in st.session_state:
     try:
         scope_df = pd.read_csv(st.session_state["vignette_scope_csv"])
@@ -458,7 +458,7 @@ if "vignette_scope_csv" in st.session_state:
         # Show only the renamed version
         st.dataframe(scope_df_disp.head(20), use_container_width=True, height=PREVIEW_HEIGHT)
 
-        # Quick counts by label (binary only), using the renamed column
+        # Quick counts by label, using the renamed column
         if "Vignette Type" in scope_df_disp.columns:
             counts = scope_df_disp["Vignette Type"].value_counts(dropna=False)
             bp = int(counts.get("BetweenPatients", 0))
@@ -514,7 +514,7 @@ else:
         infile_path = run_dir / "input_vignettes.csv"
         work_df.to_csv(infile_path, index=False)
 
-        # Call your wrapper
+        # Call wrapper
         with st.spinner("Extracting contextual factors…"):
             try:
                 out_csv = run_factor_extractor(
@@ -528,7 +528,7 @@ else:
                 st.success(f"Done. Wrote: {out_csv}")
             except Exception as e:
                 st.error(f"Extractor failed: {e}")
-# --- Persistent preview for Step 2A (always shows if we have output) ---
+# --- Persistent preview for Step 2A ---
 if "factors_csv" in st.session_state:
     try:
         df_all = pd.read_csv(st.session_state["factors_csv"])
@@ -637,7 +637,7 @@ else:
         else:
             st.info("BetweenPatients subset: 0 rows — skipped.")
 
-        # Merge outputs (attach Vignette Type) — force consistent dtype
+        # Merge outputs (attach Vignette Type)
         try:
             parts = []
 
@@ -678,7 +678,7 @@ if "run_dir" in st.session_state:
     with tabs[0]:
         if out_within.exists():
             _df = pd.read_csv(out_within)
-            _df = sort_vignette_then_decision(_df)  # NEW
+            _df = sort_vignette_then_decision(_df)
             st.dataframe(_df.head(20), use_container_width=True, height=PREVIEW_HEIGHT)
             download_csv_button("Download factors_classified_within.csv", out_within, key="dl_factors_within")
         else:
@@ -686,7 +686,7 @@ if "run_dir" in st.session_state:
     with tabs[1]:
         if out_between.exists():
             _df = pd.read_csv(out_between)
-            _df = sort_vignette_then_decision(_df)  # NEW
+            _df = sort_vignette_then_decision(_df)
             st.dataframe(_df.head(20), use_container_width=True, height=PREVIEW_HEIGHT)
             download_csv_button("Download factors_classified_between.csv", out_between, key="dl_factors_between")
         else:
@@ -694,7 +694,7 @@ if "run_dir" in st.session_state:
     with tabs[2]:
         if out_all.exists():
             _df = pd.read_csv(out_all)
-            _df = sort_vignette_then_decision(_df)  # NEW
+            _df = sort_vignette_then_decision(_df)
             st.dataframe(_df.head(20), use_container_width=True, height=PREVIEW_HEIGHT)
             download_csv_button("Download factors_classified_all.csv", out_all, key="dl_factors_all")
         else:
@@ -766,7 +766,7 @@ if "decisions_csv" in st.session_state:
         st.session_state["decisions_csv"],
         key="dl_decisions_wide_persist",
     )
-# --- Persistent preview for Step 3A (always shows if we have output) ---
+# --- Persistent preview for Step 3A ---
 if "decisions_csv" in st.session_state:
     try:
         df_dec = pd.read_csv(st.session_state["decisions_csv"])
@@ -844,7 +844,7 @@ else:
                         n_runs=int(n_runs),
                         reset_files=True,
                     )
-                    # NEW: enforce vignette-then-decision row order
+                    # Enforce vignette-then-decision row order
                     _tmp = pd.read_csv(out_within)
                     _tmp = sort_vignette_then_decision(_tmp)
                     _tmp.to_csv(out_within, index=False)
@@ -866,7 +866,7 @@ else:
                         n_runs=int(n_runs),
                         reset_files=True,
                     )
-                    # NEW: enforce vignette-then-decision row order
+                    # Enforce vignette-then-decision row order
                     _tmp = pd.read_csv(out_between)
                     _tmp = sort_vignette_then_decision(_tmp)
                     _tmp.to_csv(out_between, index=False)
@@ -878,7 +878,7 @@ else:
         else:
             st.info("BetweenPatients subset: 0 rows — skipped.")
 
-        # Merge outputs (attach Vignette Type) — force consistent dtype
+        # Merge outputs (attach Vignette Type)
         try:
             parts = []
 
@@ -900,7 +900,7 @@ else:
 
             if parts:
                 merged = pd.concat(parts, ignore_index=True)
-                merged = sort_vignette_then_decision(merged)  # NEW
+                merged = sort_vignette_then_decision(merged)
                 merged.to_csv(out_all, index=False)
                 st.success(f"Merged: {out_all}")
                 st.session_state["decisions_rated_csv"] = str(out_all)
@@ -985,7 +985,7 @@ with st.expander("Run Summary", expanded=True):
     n_vignettes = len(st.session_state.get("input_df", pd.DataFrame()))
     # factors extracted
     n_factors = _safe_len_csv(st.session_state.get("factors_csv", ""))
-    # decisions (wide): count decision columns present
+    # decisions: count decision columns present
     dec_path = st.session_state.get("decisions_csv", "")
     if dec_path:
         try:
@@ -1014,7 +1014,7 @@ st.header("Consistency Checks")
 if "decisions_csv" not in st.session_state:
     st.info("Run Step 3A (Extract Decisions) first to enable consistency checks.")
 elif "vignette_scope_csv" not in st.session_state:
-    st.info("Run Step 1 (Vignette Type) first so we can split inputs by Within/Between.")
+    st.info("Run Step 1 (Vignette Type) first to split inputs by Within/Between.")
 else:
     run_dir = Path(st.session_state["run_dir"])
     decisions_dir = run_dir / "decisions"
@@ -1037,7 +1037,7 @@ else:
     with cols[1]:
         st.caption("This builds an XLSX with a single color-coded PerRun_Likert sheet.")
 
-    # Make/refresh the split inputs (same logic as Step 3B)
+    # Split inputs
     with st.spinner("Preparing Within/Between inputs…"):
         scope_df = pd.read_csv(scope_csv, usecols=["vignette_id", "scope"])
         scope_df["vignette_id"] = scope_df["vignette_id"].astype(str)
@@ -1087,7 +1087,7 @@ else:
                     out_dir=str(decisions_dir),
                     run_prefix="within",
                     n_runs_per_call=1,
-                    reset_files=True,   # always fresh for replicates
+                    reset_files=True,
                 )
             st.success(f"PerRun_Likert workbook (WithinPatient) ready: {xlsx_path}")
             st.session_state["consistency_within_xlsx"] = xlsx_path
@@ -1107,14 +1107,14 @@ else:
                     out_dir=str(decisions_dir),
                     run_prefix="between",
                     n_runs_per_call=1,
-                    reset_files=True,   # always fresh for replicates
+                    reset_files=True,
                 )
             st.success(f"PerRun_Likert workbook (BetweenPatients) ready: {xlsx_path}")
             st.session_state["consistency_between_xlsx"] = xlsx_path
         except Exception as e:
             st.error(f"BetweenPatients consistency run failed: {e}")
 
-    # Download buttons (persist across reruns)
+    # Download buttons
     dlcols = st.columns(2)
     with dlcols[0]:
         xp = st.session_state.get("consistency_within_xlsx")

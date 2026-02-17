@@ -10,7 +10,7 @@ def _check_env():
         "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_VERSION"
     ])
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
-    has_model = bool(os.environ.get("OPENAI_MODEL"))  # deployment id or model name
+    has_model = bool(os.environ.get("OPENAI_MODEL"))
     if not has_model:
         raise RuntimeError("Set OPENAI_MODEL (Azure deployment id or OpenAI model name).")
     if not (has_azure or has_openai):
@@ -48,7 +48,7 @@ def get_args():
 REQUIRED_INPUT_COLS = ["vignette_id", "vignette_text"]
 
 def load_and_prepare(input_path: str) -> pd.DataFrame:
-    # Read CSV (utf-8 -> latin-1 fallback)
+    # Read CSV
     try:
         df = pd.read_csv(input_path)
     except UnicodeDecodeError:
@@ -59,7 +59,6 @@ def load_and_prepare(input_path: str) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Missing required column(s): {missing}. Expected {REQUIRED_INPUT_COLS}")
 
-    # Normalize types and whitespace
     df["vignette_id"] = df["vignette_id"].astype(str)
     def _norm(s):
         s = "" if pd.isna(s) else str(s)
@@ -67,31 +66,29 @@ def load_and_prepare(input_path: str) -> pd.DataFrame:
 
     df["vignette_text"] = df["vignette_text"].apply(_norm)
 
-    # The exact string we’ll feed to the LLM
     df["model_input"] = "VIGNETTE:\n" + df["vignette_text"]
 
-    # Quick sanity
     if (df["model_input"].str.len() == 0).any():
         bad = df.loc[df["model_input"].str.len() == 0, "vignette_id"].tolist()[:5]
         raise ValueError(f"Some rows produced empty model_input. Examples: {bad}")
 
     return df
 
-# --- Block 3: GABRIEL classify + write CSV (binary: WithinPatient / BetweenPatients) ---
+# GABRIEL classify + write CSV (binary: WithinPatient / BetweenPatients)
 import asyncio
 
 async def main(args):
     _check_env()
-    model = os.getenv("OPENAI_MODEL")  # Azure deployment id or OpenAI model name
+    model = os.getenv("OPENAI_MODEL")
 
-    # Load vignettes and build the 'model_input' column we prepared earlier
+    # Load vignettes and build the 'model_input' column
     df = load_and_prepare(args.input)
 
     # Run GABRIEL classification on the 'model_input' text
     results = await gabriel.classify(
         df,
-        column_name="model_input",     # <- IMPORTANT: we classify the prepared vignette text
-        labels=LABELS,                 # <- your binary label rubric defined above
+        column_name="model_input",
+        labels=LABELS,
         save_dir="vignette_scope_runs",
         model=model,
         n_runs=1,
@@ -107,9 +104,9 @@ async def main(args):
         if len(flags) == 1:
             return flags[0]
         if len(flags) == 0:
-            # Default conservative assumption when nothing is predicted
+            # Default assumption when nothing is predicted
             return "WithinPatient"
-        # If both True, prefer BetweenPatients (scarcity/triage cases are the priority)
+        # If both True, prefer BetweenPatients
         return "BetweenPatients"
 
     results["scope"] = results.apply(_pick_scope, axis=1)
@@ -118,13 +115,12 @@ async def main(args):
         .apply(lambda r: ", ".join([c for c in label_cols if r[c]]) or "None", axis=1)
     )
 
-    # Minimal, ordered output
     out_path = Path(args.output).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     results[["vignette_id", "scope", "predicted_flags"]].to_csv(out_path, index=False)
     print(f"Wrote {len(results)} rows → {out_path}")
 
-# Optional: simple programmatic wrapper (handy for Streamlit/GUI)
+# Programmatic wrapper for GUI
 def run_vignette_type_classifier(vignettes_csv: str, output_csv: str):
     class _Args:
         def __init__(self, input, output):

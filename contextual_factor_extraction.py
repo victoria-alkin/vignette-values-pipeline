@@ -1,8 +1,9 @@
-# extract_contextual_factors_llm.py — Block 1
-# Output contract: mirror the classic extractor's CSV shape
+"""
+Extract contextual factors from free-text vignettes.
+"""
+# Output columns
 OUTPUT_COLS = ["vignette_id", "factor_id", "text"]
 
-# extract_contextual_factors_llm.py — Block 2 (tweak)
 import argparse
 
 def get_args():
@@ -15,7 +16,6 @@ def get_args():
     ap.add_argument("--model", default="gpt-4o-1120", help="Model (supports JSON Schema via Responses API)")
     return ap.parse_args()
 
-# extract_contextual_factors_llm.py — Block 3
 import pandas as pd
 from pathlib import Path
 
@@ -39,8 +39,7 @@ def load_table(path: str) -> pd.DataFrame:
         raise ValueError(f"Missing required columns: {missing}")
     return df
 
-# extract_contextual_factors_llm.py — Block 4
-
+# Contextual factor extraction guidelines
 ISFACTOR_GUIDE = """
 You will extract discrete clinical/contextual FACTS from the vignette.
 
@@ -91,8 +90,7 @@ INSTRUCTIONS:
 - Minimum length threshold = {minlen} characters (very short but meaningful items are allowed if ≥ {minlen}).
 """
 
-# extract_contextual_factors_llm.py — Block 5
-
+# JSON schema for outputs
 def make_factor_list_schema(minlen: int = 1) -> dict:
     """
     JSON Schema for structured outputs:
@@ -109,14 +107,13 @@ def make_factor_list_schema(minlen: int = 1) -> dict:
                 "type": "array",
                 "items": {
                     "type": "string",
-                    "minLength": max(1, int(minlen))  # final guard will still happen in code
+                    "minLength": max(1, int(minlen))
                 }
             }
         },
         "required": ["factors"]
     }
 
-# extract_contextual_factors_llm.py — Block 6
 
 def build_messages(vignette_text: str, minlen: int) -> list[dict]:
     system_msg = (
@@ -134,19 +131,15 @@ def build_messages(vignette_text: str, minlen: int) -> list[dict]:
         {"role": "user", "content": user_msg},
     ]
 
-# extract_contextual_factors_llm.py — Block 7
-
 import os
 from typing import Tuple
 
 try:
-    # openai>=1.x
     from openai import OpenAI
     try:
-        # present in current SDKs; if missing, we'll guard below
-        from openai import AzureOpenAI  # type: ignore
+        from openai import AzureOpenAI
     except Exception:
-        AzureOpenAI = None  # type: ignore
+        AzureOpenAI = None
 except ImportError as e:
     raise SystemExit("Please `pip install openai` (v1.x).") from e
 
@@ -187,7 +180,6 @@ def create_client() -> Tuple[object, bool]:
     return client, False
 
 
-# extract_contextual_factors_llm.py — Block 8 (patched)
 import json
 
 def call_llm_factors(client, model: str, vignette_text: str, minlen: int) -> list[str]:
@@ -198,7 +190,7 @@ def call_llm_factors(client, model: str, vignette_text: str, minlen: int) -> lis
     schema = make_factor_list_schema(minlen=minlen)
     messages = build_messages(vignette_text, minlen=minlen)
 
-    # Tool/function definition to FORCE a JSON object with {"factors": [...]}
+    # Tool to force a JSON object with {"factors": [...]}
     tools = [{
         "type": "function",
         "function": {
@@ -210,7 +202,7 @@ def call_llm_factors(client, model: str, vignette_text: str, minlen: int) -> lis
 
     try:
         resp = client.chat.completions.create(
-            model=model,               # Azure: this is your Deployment ID
+            model=model,
             messages=messages,
             temperature=0,
             tools=tools,
@@ -219,7 +211,6 @@ def call_llm_factors(client, model: str, vignette_text: str, minlen: int) -> lis
     except Exception as e:
         raise RuntimeError(f"LLM call failed (chat.completions): {e}") from e
 
-    # ---- Parse tool-call JSON ----
     try:
         choice = resp.choices[0]
         tool_calls = getattr(choice.message, "tool_calls", None)
@@ -228,7 +219,6 @@ def call_llm_factors(client, model: str, vignette_text: str, minlen: int) -> lis
             data = json.loads(args_str)
             factors = data.get("factors", [])
         else:
-            # Fallback: sometimes the model returns JSON in content (shouldn't happen with tool_choice forced)
             content = choice.message.content or ""
             data = json.loads(content)
             factors = data.get("factors", [])
@@ -240,7 +230,6 @@ def call_llm_factors(client, model: str, vignette_text: str, minlen: int) -> lis
 
     return factors
 
-# extract_contextual_factors_llm.py — Block 9
 import re
 from typing import List
 
@@ -273,7 +262,6 @@ def clean_factors(factors: List[str], minlen: int, dedupe: bool) -> List[str]:
         out.append(f)
     return out
 
-# extract_contextual_factors_llm.py — Block 10
 from typing import List, Dict
 
 def attach_ids(vignette_id: str, factors: List[str]) -> List[Dict]:
@@ -288,7 +276,6 @@ def attach_ids(vignette_id: str, factors: List[str]) -> List[Dict]:
         rows.append({"vignette_id": vignette_id, "factor_id": fid, "text": text})
     return rows
 
-# extract_contextual_factors_llm.py — Block 11
 import time, random
 from typing import List, Dict
 
@@ -325,12 +312,11 @@ def extract_all(df, client, model: str, minlen: int, dedupe: bool, rate_sleep: f
         # 3) Assign IDs and collect
         all_rows.extend(attach_ids(vid, factors))
 
-        # 4) Gentle rate limit between requests
+        # 4) Rate limit between requests
         time.sleep(rate_sleep)
 
     return all_rows
 
-# extract_contextual_factors_llm.py — Block 12
 import pandas as pd
 from pathlib import Path
 from typing import List, Dict
@@ -375,7 +361,6 @@ def run_factor_extractor(
     )
     return save_results(rows, outdir, save_name)
 
-# extract_contextual_factors_llm.py — Block 13
 def main():
     args = get_args()
     df = load_table(args.infile)
@@ -384,7 +369,7 @@ def main():
     rows = extract_all(
         df=df,
         client=client,
-        model=args.model,        # Azure: this is your Deployment ID
+        model=args.model,
         minlen=args.minlen,
         dedupe=args.dedupe,
     )

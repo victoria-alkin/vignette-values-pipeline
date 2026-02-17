@@ -22,14 +22,11 @@ import re
 import json
 import argparse
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List
 
 import pandas as pd
 
-
-# -------------------------
 # LLM client (Azure OpenAI or OpenAI)
-# -------------------------
 def make_llm_client():
     """
     Returns a tuple: (backend, client, model, api_version)
@@ -62,9 +59,7 @@ def make_llm_client():
     return ("openai", client, model, None)
 
 
-# -------------------------
 # Prompting
-# -------------------------
 SYSTEM_PROMPT = """You are a clinical decision extractor.
 
 Goal:
@@ -104,9 +99,7 @@ Instructions:
 - JSON only
 """
 
-# -------------------------
-# Candidate hints (regex pre-scan)
-# -------------------------
+# Candidate hints (pre-scan)
 MODAL_PAT = re.compile(
     r'\b(?:option(?:s)?|alternatively|alternative|could|should|consider|may|might|'
     r'plan to|decide to|choose to|recommend|proceed with|initiate|start|stop|continue|'
@@ -116,7 +109,7 @@ MODAL_PAT = re.compile(
 
 def rough_candidates(text: str) -> List[str]:
     """
-    Very lightweight pre-scan for likely option-bearing clauses.
+    Pre-scan for likely option-bearing clauses.
     Returns short strings that the LLM can refine/merge/ignore.
     """
     s = re.sub(r'\s+', ' ', text).strip()
@@ -146,11 +139,9 @@ def rough_candidates(text: str) -> List[str]:
             seen.add(key)
             out.append(hh)
 
-    return out[:8]  # small cap to keep prompts tidy
+    return out[:8]
 
-# -------------------------
 # LLM call (JSON enforced)
-# -------------------------
 def call_llm(client, backend: str, model: str, user_prompt: str) -> dict:
     """
     Sends SYSTEM_PROMPT + user_prompt to the chat API and returns parsed JSON.
@@ -168,15 +159,10 @@ def call_llm(client, backend: str, model: str, user_prompt: str) -> dict:
     content = resp.choices[0].message.content
     return json.loads(content)
 
-# -------------------------
 # Post-processing helpers
-# -------------------------
 def clean_decision(txt: str) -> str:
     """
     Normalize a decision into a concise imperative action without trailing rationale.
-    Examples:
-      'To intubate the patient, which avoids pneumonia' -> 'Intubate the patient'
-      'Continue monitoring, that would avoid risks' -> 'Continue monitoring'
     """
     t = txt.strip()
 
@@ -212,33 +198,26 @@ def dedupe_keep_order(items: List[str]) -> List[str]:
     return out
 
 
-def constrain_count(items: List[str], min_k: int = 2, max_k: int = 6) -> List[str]:
+def keep_first_two(items: List[str]) -> List[str]:
     """
-    Ensure we don't return too many decisions (noise) or too few (unhelpful).
-    If too many, keep the first `max_k` (the model usually returns the best ones first).
+    Return two decisions.
     """
-    if len(items) < min_k:
-        return items
-    return items[:max_k]
+    return items[:2]
 
-# -------------------------
 # Extract decisions for a single vignette
-# -------------------------
 def extract_for_vignette(
     client,
     backend: str,
     model: str,
     vignette: str,
-    min_items: int = 2,
-    max_items: int = 2,
 ) -> List[str]:
     """
-    1) Build 'hints' from the vignette (regex pass).
+    1) Build 'hints' from the vignette
     2) Fill the USER_PROMPT_TEMPLATE with the vignette + hints.
     3) Call the LLM to get JSON decisions.
     4) Clean, dedupe, and cap the list.
     """
-    # 1) Quick regex pass to find option-like sentences (breadcrumbs only)
+    # 1) Quick pass to find option-like sentences (breadcrumbs only)
     hints = rough_candidates(vignette)
 
     # 2) Construct the user prompt (show hints or <none>)
@@ -250,7 +229,7 @@ def extract_for_vignette(
     # 3) Ask the model for decisions (JSON enforced in call_llm)
     data = call_llm(client, backend, model, user_prompt)
 
-    # Be defensive: accept either [{"text": ...}, ...] or ["...", "..."]
+    # Accept either [{"text": ...}, ...] or ["...", "..."]
     raw = []
     for item in data.get("decisions", []):
         if isinstance(item, dict):
@@ -262,15 +241,12 @@ def extract_for_vignette(
 
     # 4) Post-process
     cleaned = [clean_decision(t) for t in raw if t]
-    cleaned = [t for t in cleaned if len(t) >= 3]  # drop empties/tiny fragments
+    cleaned = [t for t in cleaned if len(t) >= 3]  # drop tiny fragments
     cleaned = dedupe_keep_order(cleaned)
-    cleaned = constrain_count(cleaned, min_items, max_items)
+    cleaned = keep_first_two(cleaned)
 
     return cleaned
 
-# -------------------------
-# CLI + file I/O
-# -------------------------
 def get_args():
     ap = argparse.ArgumentParser(description="Extract discrete decision options from clinical vignettes.")
     ap.add_argument("--infile", required=True, help="CSV with columns: vignette_id, vignette_text")
@@ -287,15 +263,14 @@ def run_decision_extractor(
     save_name: str = "vignettes_with_decisions.csv",
 ):
     """
-    Runs the decision extractor and returns the Path to the written WIDE CSV
-    with columns: vignette_id, vignette_text, decision_1..k.
-    Relies on OPENAI_MODEL and your Azure/OpenAI env vars just like the CLI.
+    Runs the decision extractor and returns CSV
+    with columns: vignette_id, vignette_text, decision_1, decision_2.
     """
     # Ensure output directory exists
     outdir_path = Path(outdir)
     outdir_path.mkdir(parents=True, exist_ok=True)
 
-    # Initialize LLM client (Azure or OpenAI), using your env vars
+    # Initialize LLM client (Azure or OpenAI), using env vars
     backend, client, model, _ = make_llm_client()
 
     # Read input CSV and validate schema
@@ -332,7 +307,7 @@ def run_decision_extractor(
         .pivot(index="vignette_id", columns="decision_idx", values="decision_text")
         .sort_index(axis=1)
     )
-    wide.columns = [f"decision_{i}" for i in wide.columns]
+    wide.columns = [f"decision_{i}" for i in wide.columns]  # decision_1, decision_2 expected
 
     # Bring back vignette_text and order columns
     base = df[["vignette_id", "vignette_text"]].drop_duplicates()
@@ -353,7 +328,7 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize LLM client (Azure or OpenAI), using your env vars
+    # Initialize LLM client (Azure or OpenAI)
     backend, client, model, _ = make_llm_client()
 
     # Read input CSV and validate schema
@@ -404,11 +379,12 @@ def main():
     base = df[["vignette_id", "vignette_text"]].drop_duplicates()
     final_df = base.merge(wide, on="vignette_id", how="left")
 
-    # Reorder columns: vignette_id, vignette_text, then decision_* in numeric order
+    # Reorder columns: vignette_id, vignette_text, decision_1, decision_2 (only)
     decision_cols = [c for c in final_df.columns if c.startswith("decision_")]
-    final_df = final_df[["vignette_id", "vignette_text", *sorted(decision_cols, key=lambda x: int(x.split("_")[1]))]]
+    decision_cols = sorted(decision_cols, key=lambda x: int(x.split("_")[1]))[:2]
+    final_df = final_df[["vignette_id", "vignette_text", *decision_cols]]
 
-    # Write (or print) the WIDE format that your rater expects
+    # Write (or print) the format that rater expects
     if args.dryrun:
         print(final_df.to_csv(index=False))
     else:

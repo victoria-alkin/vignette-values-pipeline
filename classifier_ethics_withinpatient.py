@@ -10,7 +10,7 @@ def _check_env():
         "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_VERSION"
     ])
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
-    has_model = bool(os.environ.get("OPENAI_MODEL"))  # deployment id or model name
+    has_model = bool(os.environ.get("OPENAI_MODEL"))  # model name
     if not has_model:
         raise RuntimeError("Set OPENAI_MODEL (Azure deployment id or OpenAI model name).")
     if not (has_azure or has_openai):
@@ -38,7 +38,7 @@ def get_args():
     )
     return ap.parse_args()
 
-#Main call.
+#Main call
 async def main(args):
     _check_env()
     model = os.getenv("OPENAI_MODEL")  # deployment id (Azure) or model name
@@ -53,9 +53,9 @@ async def main(args):
         df,
         column_name="text",   # name of column with text to classify
         labels=labels,        # dictionary of label definitions, defined above
-        save_dir="test_classify",  # directory to save results, use a Google Drive folder (e.g. "/content/drive/folder") for permanent storage
-        model=model,       # GPT model used for classification
-        n_runs=1, # number of classification passes per text
+        save_dir="test_classify",  # directory to save results
+        model=model,       # model used for classification
+        n_runs=3, # number of classification passes per text
         use_dummy=False,
         reset_files=True,
     )

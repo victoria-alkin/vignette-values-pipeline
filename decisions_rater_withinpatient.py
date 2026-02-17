@@ -10,14 +10,14 @@ REQUIRED = [
     "AZURE_OPENAI_API_KEY",
     "AZURE_OPENAI_ENDPOINT",
     "AZURE_OPENAI_API_VERSION",
-    "OPENAI_MODEL",  # Azure deployment id
+    "OPENAI_MODEL",
 ]
 def _check_env():
     has_azure = all(os.environ.get(k) for k in [
         "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_VERSION"
     ])
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
-    has_model = bool(os.environ.get("OPENAI_MODEL"))  # deployment id (Azure) or model name
+    has_model = bool(os.environ.get("OPENAI_MODEL"))
 
     if not has_model:
         raise RuntimeError("Set OPENAI_MODEL (Azure deployment id or OpenAI model name).")
@@ -143,7 +143,7 @@ def longify_decisions(df: pd.DataFrame) -> pd.DataFrame:
     if not dcols:
         raise ValueError("No decision columns found (expected columns like 'decision_1', 'decision_2', ...).")
 
-    # Build the per-vignette options block (full decisions)
+    # Build the per-vignette options block
     options_map = build_options_map(df)
 
     # Long form
@@ -160,7 +160,7 @@ def longify_decisions(df: pd.DataFrame) -> pd.DataFrame:
     long["decision_idx"] = long.groupby("vignette_id").cumcount() + 1
     long["decision_id"] = long.apply(lambda r: f"{r['vignette_id']}-d{int(r['decision_idx'])}", axis=1)
 
-    # Compose model input: vignette + ALL decisions (full text) + target decision (full text)
+    # Compose model input: vignette + all decisions (full text) + target decision (full text)
     long["options_block"] = long["vignette_id"].map(options_map)
     long["text"] = (
         "VIGNETTE (context):\n" + long["vignette_text"].astype(str).str.strip()
@@ -170,7 +170,7 @@ def longify_decisions(df: pd.DataFrame) -> pd.DataFrame:
 
     return long[["vignette_id", "decision_id", "decision", "text"]]
 
-# 7-point Likert labels (left=negative/counteracts, right=positive/promotes)
+# 7-point Likert labels (negative/counteracts vs positive/promotes)
 LIKERT_7 = [
     "Strongly Counteracts",
     "Moderately Counteracts",
@@ -189,7 +189,7 @@ def score_to_likert_7(x: float) -> str:
     if x < 1:  return LIKERT_7[3]  # neutral
     if x <  4: return LIKERT_7[4]  # slight promotes
     if x <  7: return LIKERT_7[5]  # moderate promotes
-    return LIKERT_7[6]              # strong promotes
+    return LIKERT_7[6]             # strong promotes
 
 # ---- Programmatic API for GUI use ----
 async def rate_decisions(
@@ -221,7 +221,7 @@ async def rate_decisions(
         additional_instructions=additional_instructions,
     )
 
-    # ----- Post-processing (unchanged from your script) -----
+    # ----- Post-processing -----
     label_cols = list(attributes.keys())
     scores = (
         rate_df[label_cols]

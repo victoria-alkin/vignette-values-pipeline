@@ -1,4 +1,4 @@
-# tools_consistency_runner.py
+# Tools consistency runner to check for consistency among replicate runs
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -47,7 +47,6 @@ def sort_vignette_then_decision(df: pd.DataFrame) -> pd.DataFrame:
     elif "decision_id" in df.columns:
         dec_series = pd.to_numeric(df["decision_id"], errors="coerce")
     elif "decision" in df.columns:
-        # works for strings like "decision_3"
         dec_series = pd.to_numeric(
             df["decision"].astype(str).str.extract(r"(\d+)", expand=False),
             errors="coerce"
@@ -99,7 +98,7 @@ def _write_perrun_sheet(writer, perrun_df: pd.DataFrame):
     run_cols = [i for i, c in enumerate(perrun_df.columns) if "__Run" in str(c)]
     # Color each Likert cell by its label
     for col_ix in run_cols:
-        for row_ix in range(1, len(perrun_df) + 1):  # row 0 is header
+        for row_ix in range(1, len(perrun_df) + 1):
             val = perrun_df.iloc[row_ix - 1, col_ix]
             if isinstance(val, str) and val in fmts:
                 ws.write(row_ix, col_ix, val, fmts[val])
@@ -124,7 +123,6 @@ def build_consistency_workbook(run_csvs: list[Path], out_xlsx: Path):
     # Merge subsequent runs (aligned on id_cols)
     for i, path in enumerate(run_csvs[1:], start=2):
         df_i = _read_run_csv(path)
-        # Ensure consistent likert columns
         for c in like_cols:
             if c not in df_i.columns:
                 df_i[c] = np.nan
@@ -132,16 +130,16 @@ def build_consistency_workbook(run_csvs: list[Path], out_xlsx: Path):
         for c in like_cols:
             merged.rename(columns={c: f"{c}__Run{i}"}, inplace=True)
     
-        # --- Reorder columns: group runs by VALUE (principle) ---
+# --- Reorder columns: group runs by value ---
     # runs = 1..R inferred from how many CSVs we merged
     runs = list(range(1, len(run_csvs) + 1))
 
-    # Build value-major order: [id cols] + [Autonomy__Run1..R] + [Justice__Run1..R] + ...
+    # Build value-based order: [id cols] + [Autonomy__Run1..R] + [Justice__Run1..R] + ...
     ordered_run_cols = []
     for val in like_cols:
         for r in runs:
             col = f"{val}__Run{r}"
-            if col in merged.columns:  # be safe
+            if col in merged.columns:
                 ordered_run_cols.append(col)
 
     # Keep IDs first, then the grouped run columns
@@ -151,7 +149,7 @@ def build_consistency_workbook(run_csvs: list[Path], out_xlsx: Path):
 
     out_xlsx.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(out_xlsx, engine="xlsxwriter") as writer:
-        merged = sort_vignette_then_decision(merged)  # NEW
+        merged = sort_vignette_then_decision(merged)
         _write_perrun_sheet(writer, merged)
 
     return out_xlsx
@@ -159,10 +157,10 @@ def build_consistency_workbook(run_csvs: list[Path], out_xlsx: Path):
 def run_replicates_and_build(
     *,
     input_csv: str,
-    rater_func,           # callable: run_decision_rater(...)
+    rater_func,
     replicates: int,
     out_dir: str,
-    run_prefix: str,      # "within" or "between"
+    run_prefix: str,
     n_runs_per_call: int = 1,
     reset_files: bool = True,
 ):
@@ -183,7 +181,6 @@ def run_replicates_and_build(
             n_runs=int(n_runs_per_call),
             reset_files=bool(reset_files),
         )
-        # NEW: enforce row order for each run file
         df_run = pd.read_csv(out_csv)
         df_run = sort_vignette_then_decision(df_run)
         df_run.to_csv(out_csv, index=False)

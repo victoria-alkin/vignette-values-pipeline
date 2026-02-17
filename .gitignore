@@ -1,0 +1,32 @@
+# --- secrets / env ---
+.env
+.env.*
+*.key
+*.pem
+
+# --- outputs / runs (do not commit generated artifacts) ---
+runs/
+artifacts/
+outputs/
+*.xlsx
+*.xls
+*.csv
+*.zip
+
+# Allow sample input CSVs under examples/
+!examples/
+!examples/*.csv
+
+# --- logs / caches ---
+*.log
+.cache/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.streamlit/
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

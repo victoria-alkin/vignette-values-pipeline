@@ -1,0 +1,9 @@
+﻿git+https://github.com/hemanth-asirvatham/GABRIEL-prerelease.git@44e7521fdf700bdcefaca03dbfe7099235b53e4e
+openai
+pandas
+tqdm
+aiolimiter
+tiktoken
+httpx
+requests
+streamlit

@@ -1,3 +1,6 @@
+from gabriel_compatibility import gabriel_compatibility_env
+gabriel_compatibility_env()
+
 import os
 import re
 import asyncio

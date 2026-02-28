@@ -1,4 +1,7 @@
 # Tools consistency runner to check for consistency among replicate runs
+from gabriel_compatibility import gabriel_compatibility_env
+gabriel_compatibility_env()
+
 from pathlib import Path
 import pandas as pd
 import numpy as np

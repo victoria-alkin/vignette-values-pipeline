@@ -16,6 +16,8 @@ This script:
   3) cleans/deduplicates the options, and
   4) writes them to CSV.
 """
+from gabriel_compatibility import gabriel_compatibility_env
+gabriel_compatibility_env()
 
 import os
 import re

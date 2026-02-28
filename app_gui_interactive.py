@@ -1,4 +1,7 @@
 # app.py — env check and input upload/preview
+from gabriel_compatibility import gabriel_compatibility_env
+gabriel_compatibility_env()
+
 import os
 from pathlib import Path
 import pandas as pd

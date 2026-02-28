@@ -1,6 +1,9 @@
 """
 Extract contextual factors from free-text vignettes.
 """
+from gabriel_compatibility import gabriel_compatibility_env
+gabriel_compatibility_env()
+
 # Output columns
 OUTPUT_COLS = ["vignette_id", "factor_id", "text"]
 

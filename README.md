@@ -61,8 +61,7 @@ And **either**:
 - `AZURE_OPENAI_ENDPOINT`
 - `AZURE_OPENAI_API_VERSION`
 
-The included `gabriel_compatibility.py` file automatically maps Azure credentials into OpenAI-compatible environment variables without overwriting existing values.
-
+The included compatibility layer (`gabriel_compatibility.py` + `llm_client_compat.py`) patches upstream GABRIEL at runtime so the pipeline can call **either** OpenAI **or** Azure OpenAI depending on which environment variables are set. It does **not** overwrite your existing environment variables.
 
 ### Using Azure OpenAI (PowerShell example)
 
@@ -71,7 +70,10 @@ $env:AZURE_OPENAI_API_KEY     = "<your key>"
 $env:AZURE_OPENAI_ENDPOINT    = "https://your-resource.openai.azure.com"
 $env:AZURE_OPENAI_API_VERSION = "2025-03-01-preview"
 
-$env:OPENAI_MODEL = "gpt-4.1-mini"
+# IMPORTANT:
+# For Azure, OPENAI_MODEL must be your *deployment name* in Azure OpenAI.
+# This is not necessarily the base model name.
+$env:OPENAI_MODEL = "<your-deployment-name>"
 ```
 
 Do **not** manually append `/openai` to the endpoint.  
@@ -119,7 +121,7 @@ Core modules (Python):
 - `decision_extraction.py` — Step 3A: extracts decision options from each vignette.
 - `decisions_rater_withinpatient.py` / `decisions_rater_betweenpatients.py` — Step 3B: rates decisions by the extent to which they promote/neutral/counteract ethical principles for each vignette type.
 - `tools_consistency_runner.py` — Tool for running replicate rating to check consistency and exporting a `PerRun_Likert` workbook.
-- `gabriel_compatibility.py` — Compatibility layer allowing either Azure OpenAI or OpenAI credentials without modifying upstream GABRIEL.
+- `gabriel_compatibility.py` — Patches upstream GABRIEL to route requests through llm_client_compat.py, which supports both Azure OpenAI and OpenAI.
 
 Example input:
 - `examples/sample_vignettes.csv`

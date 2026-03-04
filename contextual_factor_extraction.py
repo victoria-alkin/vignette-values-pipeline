@@ -16,7 +16,7 @@ def get_args():
     ap.add_argument("--minlen", type=int, default=3, help="Minimum snippet length after trimming (default: 3)")
     ap.add_argument("--dedupe", action="store_true", help="Drop exact duplicate factors within each vignette")
     ap.add_argument("--save-name", default="factors_extracted_llm.csv", help="Output CSV filename")
-    ap.add_argument("--model", default="gpt-4o-1120", help="Model (supports JSON Schema via Responses API)")
+    ap.add_argument("--model", default=None, help="Model name (OpenAI) or deployment name (Azure). If omitted, uses OPENAI_MODEL env var.")
     return ap.parse_args()
 
 import pandas as pd
@@ -135,8 +135,14 @@ def build_messages(vignette_text: str, minlen: int) -> list[dict]:
     ]
 
 import os
+import sys
 from typing import Tuple
 
+# Fallback Azure API version if AZURE_OPENAI_API_VERSION is not set.
+DEFAULT_AZURE_OPENAI_API_VERSION = os.getenv(
+    "AZURE_OPENAI_API_VERSION_FALLBACK",
+    "2024-12-01-preview",
+)
 try:
     from openai import OpenAI
     try:
@@ -162,13 +168,18 @@ def create_client() -> Tuple[object, bool]:
     """
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
     azure_ep = os.getenv("AZURE_OPENAI_ENDPOINT")
-    azure_ver = os.getenv("AZURE_OPENAI_API_VERSION")
+    azure_ver_env = os.getenv("AZURE_OPENAI_API_VERSION")
+    azure_ver = azure_ver_env or DEFAULT_AZURE_OPENAI_API_VERSION
 
     if azure_key and azure_ep:
         if AzureOpenAI is None:
             raise SystemExit("Your OpenAI SDK doesn't expose AzureOpenAI. Upgrade `openai` to v1.x.")
-        if not azure_ver:
-            raise SystemExit("Set AZURE_OPENAI_API_VERSION for Azure OpenAI (e.g., 2024-12-01-preview).")
+        if not azure_ver_env:
+            print(
+                f"[warn] AZURE_OPENAI_API_VERSION not set; defaulting to {azure_ver}. "
+                f"Set AZURE_OPENAI_API_VERSION to avoid surprises.",
+                file=sys.stderr,
+            )
         client = AzureOpenAI(
             azure_endpoint=azure_ep,
             api_key=azure_key,
@@ -347,6 +358,7 @@ def run_factor_extractor(
     """
     Runs the extractor and returns the Path to the written CSV
     with columns: vignette_id, factor_id, text.
+
     - If `model` is None, uses OPENAI_MODEL env var, else falls back to 'gpt-4o-1120'.
     - Works with both AzureOpenAI (deployment ID) and OpenAI (model name).
     """
@@ -369,10 +381,11 @@ def main():
     df = load_table(args.infile)
 
     client, is_azure = create_client()
+    model_to_use = args.model or os.getenv("OPENAI_MODEL") or "gpt-4o-1120"
     rows = extract_all(
         df=df,
         client=client,
-        model=args.model,
+        model=model_to_use,
         minlen=args.minlen,
         dedupe=args.dedupe,
     )

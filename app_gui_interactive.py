@@ -11,10 +11,10 @@ import shutil
 from typing import Union
 from pandas.io.formats.style import Styler
 
-st.set_page_config(page_title="Medical Vignettes — Ethics Pipeline", layout="wide")
+st.set_page_config(page_title="Medical Vignettes Ethics Pipeline", layout="wide")
 PREVIEW_HEIGHT = 300
 
-# --- Backend/env status (sidebar) ---
+# Backend/env status (sidebar)
 def detect_backend():
     has_azure = all(os.getenv(k) for k in [
         "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_VERSION"
@@ -96,7 +96,7 @@ def sort_vignette_then_decision(df: pd.DataFrame) -> pd.DataFrame:
     df.sort_values(["_vid_sort", "_dec_sort"], kind="mergesort", inplace=True)
     return df.drop(columns=["_vid_sort", "_dec_sort"], errors="ignore")
 
-# ---- Likert styling for GUI previews ----
+# Likert styling for GUI previews
 RATING_LABELS = [
     "Strongly Counteracts","Moderately Counteracts","Slightly Counteracts",
     "Neutral","Slightly Promotes","Moderately Promotes","Strongly Promotes",
@@ -132,7 +132,7 @@ def style_likert(df: pd.DataFrame) -> Styler:
         return f"background-color: {RATING_COLORS.get(str(v), '')}"
     return styler.applymap(color_cell, subset=like_cols)
 
-# --- Summary workbook builder (XLSX) ---
+# Summary workbook builder (XLSX)
 def build_summary_workbook(run_dir: Path) -> Path:
     """
     Creates summary.xlsx in run_dir with the requested sheets and formatting.
@@ -143,7 +143,7 @@ def build_summary_workbook(run_dir: Path) -> Path:
     run_dir = Path(run_dir)
     out_xlsx = run_dir / "summary.xlsx"
 
-    # Expected files -> sheet names
+    # Expected files to sheet names
     factors_dir = run_dir / "factors"
     decisions_dir = run_dir / "decisions"
     vt_dir = run_dir / "vignette_type"
@@ -351,8 +351,23 @@ with st.sidebar:
     else:
         st.error(f"{title}\n\n{detail}")
 
-st.title("Human Values Project — Vignette Ethics")
-st.write("Upload a table with columns **vignette_id** and **vignette_text**.")
+st.title("Human Values Project: Vignette Values")
+st.markdown(
+    """
+**Accepted input formats**
+
+1) Vignette only. Columns:
+- `vignette_id`
+- `vignette_text`
+
+2) Vignette with pre-extracted decisions (Step 3A will be skipped). Columns:
+- `vignette_id`
+- `vignette_text`
+- `decision_1`
+- `decision_2`
+- (optional) `decision_3...decision_k`
+"""
+)
 
 # --- File uploader ---
 uploaded = st.file_uploader("Upload CSV / XLSX / JSONL", type=["csv", "xlsx", "xls", "jsonl", "ndjson"])
@@ -366,6 +381,50 @@ def read_table(uploaded_file) -> pd.DataFrame:
     if name.endswith((".jsonl", ".ndjson")):
         return pd.read_json(uploaded_file, lines=True)
     raise ValueError("Unsupported file type (use csv/xlsx/jsonl).")
+
+import re
+
+def normalize_input_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Make column naming robust:
+    - Accept Vignette_ID / vignette_ID / etc by renaming to vignette_id / vignette_text
+    - Accept Decision_1 / DECISION_2 / etc by renaming to decision_1 / decision_2 / ...
+    """
+    rename = {}
+
+    # vignette_id, vignette_text
+    for target in ("vignette_id", "vignette_text"):
+        if target not in df.columns:
+            for c in df.columns:
+                if str(c).lower() == target:
+                    rename[c] = target
+                    break
+
+    # decision_k columns
+    for c in df.columns:
+        m = re.fullmatch(r"decision_(\d+)", str(c).lower())
+        if m:
+            k = int(m.group(1))
+            canon = f"decision_{k}"
+            if c != canon:
+                rename[c] = canon
+
+    if rename:
+        df = df.rename(columns=rename)
+    return df
+
+
+def get_decision_columns(df: pd.DataFrame) -> list[str]:
+    """
+    Return decision columns in numeric order: decision_1, decision_2, ..., decision_k
+    """
+    dec_cols = []
+    for c in df.columns:
+        m = re.fullmatch(r"decision_(\d+)", str(c))
+        if m:
+            dec_cols.append((int(m.group(1)), c))
+    dec_cols.sort(key=lambda x: x[0])
+    return [c for _, c in dec_cols]
 
 if uploaded:
     try:
@@ -384,20 +443,59 @@ if uploaded:
                 "decisions_rated_between_csv",     # Step 3B (between)
                 "run_zip",
                 "run_dir",                         # optional: force a fresh run dir per upload
+                "input_has_decisions",
+                "input_decision_cols",
             ]
             for k in stale_keys:
                 st.session_state.pop(k, None)
 
         df = read_table(uploaded)
+        df = normalize_input_columns(df)
+        decision_cols = get_decision_columns(df)
+        has_preextracted_decisions = ("decision_1" in df.columns) and ("decision_2" in df.columns)
+        has_any_decision_cols = len(decision_cols) > 0
         required = {"vignette_id", "vignette_text"}
         missing = required - set(df.columns)
         if missing:
             st.error(f"Missing required columns: {sorted(missing)}. Found: {list(df.columns)}")
         else:
+            # show preview
             st.success(f"Loaded {len(df):,} vignettes.")
             st.dataframe(df.head(20), use_container_width=True)
+            # decision schema validation before saving input_df
+            if has_any_decision_cols and not has_preextracted_decisions:
+                st.error(
+                    "Found decision_* columns, but missing decision_1 and/or decision_2. "
+                    "Either provide decision_1 and decision_2 (and optionally decision_3..k), "
+                    "or remove decision_* columns."
+                )
+                st.session_state.pop("input_df", None)  # optional but safe
+                st.stop()
+            # save input_df
             st.session_state["input_df"] = df
             st.session_state["input_name"] = uploaded.name
+            st.session_state["input_has_decisions"] = bool(has_preextracted_decisions)
+            st.session_state["input_decision_cols"] = decision_cols
+
+            # If decisions are already present, write them to the run folder so Steps 3B/Tools can run without Step 3A.
+            if has_preextracted_decisions:
+                run_dir = Path(st.session_state.get("run_dir", Path(base_out) / run_name))
+                decisions_dir = run_dir / "decisions"
+                run_dir.mkdir(parents=True, exist_ok=True)
+                decisions_dir.mkdir(parents=True, exist_ok=True)
+
+                decisions_wide = df[["vignette_id", "vignette_text"] + decision_cols].copy()
+                out_csv = decisions_dir / "decisions_extracted.csv"
+                decisions_wide.to_csv(out_csv, index=False)
+
+                st.session_state["run_dir"] = str(run_dir)
+                st.session_state["decisions_csv"] = str(out_csv)
+
+                st.info("Detected decision_1/decision_2 in the upload. Step 3A will be skipped.")
+            else:
+                # Ensure we don't accidentally keep an old decisions_csv around when the new file has no decisions.
+                st.session_state.pop("decisions_csv", None)
+            
     except Exception as e:
         st.error(f"Could not read file: {e}")
 
@@ -452,7 +550,7 @@ else:
             except Exception as e:
                 st.error(f"Vignette type classifier failed: {e}")
 
-# --- Persistent preview for Step 1 ---
+# Persistent preview for Step 1
 if "vignette_scope_csv" in st.session_state:
     try:
         scope_df = pd.read_csv(st.session_state["vignette_scope_csv"])
@@ -531,7 +629,7 @@ else:
                 st.success(f"Done. Wrote: {out_csv}")
             except Exception as e:
                 st.error(f"Extractor failed: {e}")
-# --- Persistent preview for Step 2A ---
+# Persistent preview for Step 2A
 if "factors_csv" in st.session_state:
     try:
         df_all = pd.read_csv(st.session_state["factors_csv"])
@@ -669,7 +767,7 @@ else:
         except Exception as e:
             st.warning(f"Could not build merged factors file: {e}")
 
-# --- Persistent preview for Step 2B (by Vignette Type) ---
+# Persistent preview for Step 2B (by Vignette Type)
 if "run_dir" in st.session_state:
     run_dir = Path(st.session_state["run_dir"])
     factors_dir = run_dir / "factors"
@@ -710,6 +808,7 @@ if "input_df" not in st.session_state:
     st.info("Upload a vignette file above to enable this step.")
 else:
     df = st.session_state["input_df"]
+    decisions_present = bool(st.session_state.get("input_has_decisions", False))
 
     cols = st.columns([1,1,2])
     with cols[0]:
@@ -717,6 +816,7 @@ else:
             "Process only the first N vignettes",
             value=True,
             key="limit_on_dec",
+            disabled=decisions_present,
             help="When on, only the first N rows (vignettes) from the uploaded file are sent to the decision extractor."
         )
     with cols[1]:
@@ -727,7 +827,7 @@ else:
             max_value=max_n_dec,
             value=min(20, max_n_dec),
             step=1,
-            disabled=not limit_on_dec,
+            disabled=decisions_present or (not limit_on_dec),
             key="n_limit_dec",
             help="This limits the number of vignettes, not the number of decision options per vignette."
         )
@@ -735,7 +835,11 @@ else:
         st.caption("Output: one row per vignette with columns decision_1..k.")
 
 
-    if st.button("Run decision extractor", type="primary", disabled=(status != "success")):
+    if decisions_present:
+        st.success("Decisions already present in uploaded file; Step 3A is skipped.")
+    
+    btn_label = "Decisions already present" if decisions_present else "Run decision extractor"
+    if st.button(btn_label, type="primary", disabled=(status != "success" or decisions_present)):
         # Lazy import to speed initial load
         from decision_extraction import run_decision_extractor
 
@@ -769,23 +873,18 @@ if "decisions_csv" in st.session_state:
         st.session_state["decisions_csv"],
         key="dl_decisions_wide_persist",
     )
+# Persistent preview for Step 3A
 # --- Persistent preview for Step 3A ---
 if "decisions_csv" in st.session_state:
     try:
         df_dec = pd.read_csv(st.session_state["decisions_csv"])
-        if "vignette_id" in df_dec.columns:
-            vid_options_3a = [str(v) for v in sorted(df_dec["vignette_id"].astype(str).unique())]
-            chosen_vid_3a = st.selectbox(
-                "Preview decisions per vignette_id",
-                vid_options_3a,
-                index=0,
-                key="prev_step3a_vid",
-            )
-            view_3a = df_dec[df_dec["vignette_id"].astype(str) == chosen_vid_3a]
-        else:
-            st.warning("Decisions file is missing 'vignette_id'. Showing first 20 rows.")
-            view_3a = df_dec.head(20)
-        st.dataframe(view_3a, use_container_width=True, height=PREVIEW_HEIGHT)
+
+        # Optional: nice stable ordering by vignette_id (numeric-ish if present)
+        df_dec = sort_vignette_then_decision(df_dec)
+
+        st.caption(f"Previewing decisions_extracted.csv — {len(df_dec):,} vignettes (one row per vignette).")
+        st.dataframe(df_dec, use_container_width=True, height=PREVIEW_HEIGHT)
+
     except Exception as e:
         st.warning(f"Could not preview decisions CSV: {e}")
 
@@ -910,7 +1009,7 @@ else:
         except Exception as e:
             st.warning(f"Could not build merged decisions file: {e}")
 
-# --- Persistent preview for Step 3B (by Vignette Type) ---
+# Persistent preview for Step 3B (by Vignette Type)
 if "run_dir" in st.session_state:
     run_dir = Path(st.session_state["run_dir"])
     decisions_dir = run_dir / "decisions"

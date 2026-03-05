@@ -11,6 +11,11 @@ import shutil
 from typing import Union
 from pandas.io.formats.style import Styler
 
+import inspect
+import gabriel.utils.openai_utils as ou
+import llm_client_compat
+import gabriel_compatibility
+
 st.set_page_config(page_title="Medical Vignettes Ethics Pipeline", layout="wide")
 PREVIEW_HEIGHT = 300
 
@@ -366,6 +371,8 @@ st.markdown(
 - `decision_1`
 - `decision_2`
 - (optional) `decision_3...decision_k`
+
+See example vignettes in examples/ for reference.
 """
 )
 
@@ -499,18 +506,96 @@ if uploaded:
     except Exception as e:
         st.error(f"Could not read file: {e}")
 
+# Framework selection (skip Step 1 if user chooses a single framework)
+st.subheader("Ethical framework selection")
+
+st.markdown(
+    """
+This pipeline supports **two ethical frameworks**, depending on the vignette type:
+
+- **WithinPatient**: decisions that involve tradeoffs *within a single patient's care*. Uses Principalism framework with principles of autonomy, beneficence,
+nonmaleficence, and justice.
+- **BetweenPatients**: decisions that involve tradeoffs *between different patients* (allocation / triage style). Uses principles of need, maximal overall benefit, equity, equality, and reciprocity.
+
+If your input contains a **mix**, and you would like the most relevant framework to automatically be applied, choose **Auto (mixed)** and the app will run **Step 1** to classify each vignette by type (within patient or between patients) and split downstream steps into the corresponding ethical frameworks.
+If your input is **all one type** or you are interested in **one particular ethical framework**, choose that framework and **Step 1 will be skipped**.
+"""
+)
+
+# Explicit principle lists (authoritative)
+WITHIN_PRINCIPLES = {
+    "Beneficence": "Promote the patient’s health or well-being. Includes considerations of sanctity of life.",
+    "Non-maleficence": "Avoid unnecessary harm, suffering, or risk.",
+    "Autonomy": "Respect the patient’s right to make informed decisions. Includes considerations of patient perspectives.",
+    "Justice": "Balance patient-level benefit with population-level benefit. Includes consideration of incentives and finances.",
+}
+
+BETWEEN_PRINCIPLES = {
+    "Need": "Prioritize those who are worst off or most in need.",
+    "Maximal overall benefit": "Achieve the greatest total good (e.g., most QALYs).",
+    "Equity": "Ensure proportionate outcomes across groups.",
+    "Equality": "Treat patients identically in distribution of resources.",
+    "Reciprocity": "Give priority to those who contribute more (e.g., healthcare workers, organ donors).",
+}
+
+with st.expander("Show brief definitions of ethical principles used in each framework", expanded=False):
+    st.markdown("**WithinPatient framework uses:**")
+    for k, v in WITHIN_PRINCIPLES.items():
+        st.markdown(f"- **{k}**: {v}")
+
+    st.markdown("**BetweenPatients framework uses:**")
+    for k, v in BETWEEN_PRINCIPLES.items():
+        st.markdown(f"- **{k}**: {v}")
+
+framework_mode = st.radio(
+    "How should the app choose the framework?",
+    options=[
+        "Auto (mixed vignettes: run Step 1 and split)",
+        "WithinPatient only. Use Principalism framework with principles of autonomy, beneficence, nonmaleficence, and justice. (skip Step 1)",
+        "BetweenPatients only. Use principles of need, maximal overall benefit, equity, equality, and reciprocity. (skip Step 1)",
+    ],
+    index=0,
+    key="framework_mode_ui",
+)
+
+# normalize to a simple internal code
+if framework_mode.startswith("Auto"):
+    framework_mode_code = "auto"
+elif framework_mode.startswith("WithinPatient"):
+    framework_mode_code = "within"
+else:
+    framework_mode_code = "between"
+
+# If user changes framework mode, clear downstream artifacts so UI doesn't show stale merges
+prev_mode = st.session_state.get("framework_mode")
+if prev_mode and prev_mode != framework_mode_code:
+    for k in [
+        "vignette_scope_csv",
+        "factors_classified_csv", "factors_classified_within_csv", "factors_classified_between_csv",
+        "decisions_rated_csv", "decisions_rated_within_csv", "decisions_rated_between_csv",
+    ]:
+        st.session_state.pop(k, None)
+
+st.session_state["framework_mode"] = framework_mode_code
+
 # Step 1 — Vignette Type (Within Patient vs Between Patient Scenario)
 st.divider()
 st.header("Step 1 — Vignette Type (Within Patient vs Between Patient Scenario)")
+st.caption("Classifies each vignette as WithinPatient or BetweenPatients to determine which ethical framework and downstream classifiers should be applied.")
+
+framework_mode = st.session_state.get("framework_mode", "auto")
+
+if framework_mode != "auto":
+    st.info(f"Step 1 skipped: using **{framework_mode}** framework for all vignettes (no splitting).")
 
 if "input_df" not in st.session_state:
     st.info("Upload a vignette file above to enable this step.")
-else:
+elif framework_mode == "auto":
     df = st.session_state["input_df"]
 
     cols = st.columns([1, 1, 2])
     with cols[0]:
-        limit_on_scope = st.checkbox("Limit N vignettes", value=True, key="limit_on_scope")
+        limit_on_scope = st.checkbox("Limit N vignettes", value=False, key="limit_on_scope")
     with cols[1]:
         max_n_scope = len(df)
         n_limit_scope = st.number_input(
@@ -535,6 +620,7 @@ else:
 
         # Write the working input CSV (respect optional limit)
         work_df = df.head(int(n_limit_scope)) if limit_on_scope else df
+        work_df = work_df[["vignette_id", "vignette_text"]].copy()
         infile_path = run_dir / "input_vignettes.csv"
         work_df.to_csv(infile_path, index=False)
 
@@ -550,8 +636,8 @@ else:
             except Exception as e:
                 st.error(f"Vignette type classifier failed: {e}")
 
-# Persistent preview for Step 1
-if "vignette_scope_csv" in st.session_state:
+if framework_mode == "auto" and "vignette_scope_csv" in st.session_state:
+    # Persistent preview for Step 1
     try:
         scope_df = pd.read_csv(st.session_state["vignette_scope_csv"])
         scope_df_disp = scope_df.rename(columns={"scope": "Vignette Type"})
@@ -570,18 +656,20 @@ if "vignette_scope_csv" in st.session_state:
     except Exception as e:
         st.warning(f"Could not preview vignette type CSV: {e}")
 
-# Download button
-if "vignette_scope_csv" in st.session_state:
-    download_csv_button(
-        "Download vignette type CSV",
-        st.session_state["vignette_scope_csv"],
-        key="dl_vignette_scope_persist",
-    )
+    # Download button
+    if "vignette_scope_csv" in st.session_state:
+        download_csv_button(
+            "Download vignette type CSV",
+            st.session_state["vignette_scope_csv"],
+            key="dl_vignette_scope_persist",
+        )
 
 
 # Step 2 - Contextual Factors
 st.divider()
 st.header("Step 2A — Extract Contextual Factors")
+st.caption("Extracts a set of contextual factors from each vignette (i.e. individual facts/phrases from the vignette that could influence decision-making) for downstream ethical classification.")
+st.caption("If your analysis focuses only on tagging DECISIONS with values, scroll down to Step 3.")
 
 disabled = "input_df" not in st.session_state
 if disabled:
@@ -591,7 +679,7 @@ else:
 
     cols = st.columns([1,2])
     with cols[0]:
-         limit_on = st.checkbox("Limit N vignettes", value=True)
+         limit_on = st.checkbox("Limit N vignettes", value=False)
     with cols[1]:
         max_n = len(df)
         n_limit = st.number_input(
@@ -659,113 +747,158 @@ if "factors_csv" in st.session_state:
 
 st.divider()
 st.header("Step 2B — Classify Contextual Factors (by Vignette Type)")
+st.caption("Tags each extracted factor with ethical principle labels using the appropriate framework (WithinPatient vs BetweenPatients).")
+
+framework_mode = st.session_state.get("framework_mode", "auto")
 
 if "factors_csv" not in st.session_state:
     st.info("Run the extractor first to enable this step.")
-elif "vignette_scope_csv" not in st.session_state:
-    st.info("Run Step 1 (Vignette Type) first to enable branching here.")
+elif framework_mode == "auto" and "vignette_scope_csv" not in st.session_state:
+    st.info("Run Step 1 (Vignette Type) first (Auto mode) to enable splitting here.")
 else:
     factors_csv = st.session_state["factors_csv"]
-    run_dir = Path(st.session_state["run_dir"])
-    factors_dir = run_dir / "factors"
 
-    # Standard output paths
+    run_dir = Path(st.session_state.get("run_dir", Path(base_out) / run_name))
+    st.session_state["run_dir"] = str(run_dir)
+    factors_dir = run_dir / "factors"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    factors_dir.mkdir(parents=True, exist_ok=True)
+
     out_within = factors_dir / "factors_classified_within.csv"
     out_between = factors_dir / "factors_classified_between.csv"
     out_all = factors_dir / "factors_classified_all.csv"
 
-    # Controls
-    cols = st.columns([2, 2, 2])
-    with cols[0]:
-        st.caption("Outputs will be written to the run folder:")
-        st.code(str(factors_dir), language="text")
-    with cols[1]:
-        st.caption("File names:")
-        st.code(
-            "factors_classified_within.csv\n"
-            "factors_classified_between.csv\n"
-            "factors_classified_all.csv",
-            language="text",
+    # ------------------------
+    # SINGLE-FRAMEWORK MODE
+    # ------------------------
+    if framework_mode != "auto":
+        # choose classifier + output
+        if framework_mode == "within":
+            from classifier_ethics_withinpatient import run_factor_classifier as run_factor_classifier_single
+            out_single = out_within
+            vignette_type_label = "WithinPatient"
+        else:
+            from classifier_ethics_betweenpatients import run_factor_classifier as run_factor_classifier_single
+            out_single = out_between
+            vignette_type_label = "BetweenPatients"
+
+        st.caption(f"Single-framework mode: running **{vignette_type_label}** classifier on all factor rows (no splitting).")
+
+        run_btn = st.button(
+            f"Run factor classifier ({vignette_type_label})",
+            type="primary",
+            disabled=(status != "success"),
+            key=f"btn_factor_single_{framework_mode}",
         )
-    with cols[2]:
-        st.caption("Each branch runs only on its Vignette Type subset, joined by vignette_id.")
 
-    if st.button("Run factor classifier by Vignette Type", type="primary", disabled=(status != "success")):
-        # Lazy imports for speed
-        from classifier_ethics_withinpatient import run_factor_classifier as run_factor_classifier_within
-        from classifier_ethics_betweenpatients import run_factor_classifier as run_factor_classifier_between
+        if run_btn:
+            try:
+                fac_df = pd.read_csv(factors_csv, dtype={"vignette_id": str})
+                in_single = factors_dir / "factors_single_input.csv"
+                fac_df[["vignette_id", "factor_id", "text"]].to_csv(in_single, index=False)
 
-        with st.spinner("Preparing subsets…"):
-            scope_df = pd.read_csv(st.session_state["vignette_scope_csv"])[["vignette_id", "scope"]]
-            scope_df["vignette_id"] = scope_df["vignette_id"].astype(str)
+                with st.spinner(f"Classifying factors ({vignette_type_label})… ({len(fac_df):,} rows)"):
+                    run_factor_classifier_single(str(in_single), str(out_single))
 
-            fac_df = pd.read_csv(factors_csv)
-            fac_df["vignette_id"] = fac_df["vignette_id"].astype(str)
+                st.success(f"Wrote: {out_single}")
 
-            joined = fac_df.merge(scope_df, on="vignette_id", how="inner")
-            within_df = joined[joined["scope"] == "WithinPatient"].copy()
-            between_df = joined[joined["scope"] == "BetweenPatients"].copy()
+                # Build merged output with constant Vignette Type
+                df_out = pd.read_csv(out_single)
+                df_out["Vignette Type"] = vignette_type_label
+                df_out.to_csv(out_all, index=False)
+                st.success(f"Merged (single framework): {out_all}")
 
-            # Write subset inputs to disk for the two branch calls
-            in_within = factors_dir / "factors_within_input.csv"
-            in_between = factors_dir / "factors_between_input.csv"
-            if len(within_df):
-                within_df[["vignette_id", "factor_id", "text"]].to_csv(in_within, index=False)
-            if len(between_df):
-                between_df[["vignette_id", "factor_id", "text"]].to_csv(in_between, index=False)
+                # session state outputs
+                if framework_mode == "within":
+                    st.session_state["factors_classified_within_csv"] = str(out_single)
+                    st.session_state.pop("factors_classified_between_csv", None)
+                else:
+                    st.session_state["factors_classified_between_csv"] = str(out_single)
+                    st.session_state.pop("factors_classified_within_csv", None)
+                st.session_state["factors_classified_csv"] = str(out_all)
 
-        # Branch: WithinPatient
-        if len(within_df):
-            with st.spinner(f"Classifying factors (WithinPatient)… ({len(within_df):,} rows)"):
-                try:
-                    run_factor_classifier_within(str(in_within), str(out_within))
+            except Exception as e:
+                st.error(f"Factor classifier failed: {e}")
+
+    # ------------------------
+    # AUTO MODE (split by Step 1 output)
+    # ------------------------
+    else:
+        cols = st.columns([2, 2, 2])
+        with cols[0]:
+            st.caption("Outputs will be written to the run folder:")
+            st.code(str(factors_dir), language="text")
+        with cols[1]:
+            st.caption("File names:")
+            st.code(
+                "factors_classified_within.csv\n"
+                "factors_classified_between.csv\n"
+                "factors_classified_all.csv",
+                language="text",
+            )
+        with cols[2]:
+            st.caption("Each branch runs only on its Vignette Type subset, joined by vignette_id.")
+
+        if st.button("Run factor classifier by Vignette Type", type="primary", disabled=(status != "success")):
+            try:
+                from classifier_ethics_withinpatient import run_factor_classifier as run_factor_classifier_within
+                from classifier_ethics_betweenpatients import run_factor_classifier as run_factor_classifier_between
+
+                with st.spinner("Preparing subsets…"):
+                    scope_df = pd.read_csv(st.session_state["vignette_scope_csv"], usecols=["vignette_id", "scope"], dtype={"vignette_id": str})
+                    fac_df = pd.read_csv(factors_csv, dtype={"vignette_id": str})
+
+                    joined = fac_df.merge(scope_df, on="vignette_id", how="inner")
+                    within_df = joined[joined["scope"] == "WithinPatient"].copy()
+                    between_df = joined[joined["scope"] == "BetweenPatients"].copy()
+
+                    in_within = factors_dir / "factors_within_input.csv"
+                    in_between = factors_dir / "factors_between_input.csv"
+                    if len(within_df):
+                        within_df[["vignette_id", "factor_id", "text"]].to_csv(in_within, index=False)
+                    if len(between_df):
+                        between_df[["vignette_id", "factor_id", "text"]].to_csv(in_between, index=False)
+
+                if len(within_df):
+                    with st.spinner(f"Classifying factors (WithinPatient)… ({len(within_df):,} rows)"):
+                        run_factor_classifier_within(str(in_within), str(out_within))
                     st.success(f"Wrote: {out_within}")
                     st.session_state["factors_classified_within_csv"] = str(out_within)
-                except Exception as e:
-                    st.error(f"WithinPatient classifier failed: {e}")
-        else:
-            st.info("WithinPatient subset: 0 rows — skipped.")
+                else:
+                    st.info("WithinPatient subset: 0 rows — skipped.")
+                    st.session_state.pop("factors_classified_within_csv", None)
 
-        # Branch: BetweenPatients
-        if len(between_df):
-            with st.spinner(f"Classifying factors (BetweenPatients)… ({len(between_df):,} rows)"):
-                try:
-                    run_factor_classifier_between(str(in_between), str(out_between))
+                if len(between_df):
+                    with st.spinner(f"Classifying factors (BetweenPatients)… ({len(between_df):,} rows)"):
+                        run_factor_classifier_between(str(in_between), str(out_between))
                     st.success(f"Wrote: {out_between}")
                     st.session_state["factors_classified_between_csv"] = str(out_between)
-                except Exception as e:
-                    st.error(f"BetweenPatients classifier failed: {e}")
-        else:
-            st.info("BetweenPatients subset: 0 rows — skipped.")
+                else:
+                    st.info("BetweenPatients subset: 0 rows — skipped.")
+                    st.session_state.pop("factors_classified_between_csv", None)
 
-        # Merge outputs (attach Vignette Type)
-        try:
-            parts = []
+                # Merge outputs and attach Vignette Type
+                parts = []
+                scope_df2 = pd.read_csv(st.session_state["vignette_scope_csv"], usecols=["vignette_id", "scope"], dtype={"vignette_id": str})
 
-            # read scope table with vignette_id as str
-            scope_df = pd.read_csv(
-                st.session_state["vignette_scope_csv"],
-                usecols=["vignette_id", "scope"],
-                dtype={"vignette_id": str},
-            )
+                if out_within.exists():
+                    w = pd.read_csv(out_within, dtype={"vignette_id": str})
+                    w = w.merge(scope_df2, on="vignette_id", how="left").rename(columns={"scope": "Vignette Type"})
+                    parts.append(w)
 
-            if out_within.exists():
-                w = pd.read_csv(out_within, dtype={"vignette_id": str})
-                w = w.merge(scope_df, on="vignette_id", how="left").rename(columns={"scope": "Vignette Type"})
-                parts.append(w)
+                if out_between.exists():
+                    b = pd.read_csv(out_between, dtype={"vignette_id": str})
+                    b = b.merge(scope_df2, on="vignette_id", how="left").rename(columns={"scope": "Vignette Type"})
+                    parts.append(b)
 
-            if out_between.exists():
-                b = pd.read_csv(out_between, dtype={"vignette_id": str})
-                b = b.merge(scope_df, on="vignette_id", how="left").rename(columns={"scope": "Vignette Type"})
-                parts.append(b)
+                if parts:
+                    merged = pd.concat(parts, ignore_index=True)
+                    merged.to_csv(out_all, index=False)
+                    st.success(f"Merged: {out_all}")
+                    st.session_state["factors_classified_csv"] = str(out_all)
 
-            if parts:
-                merged = pd.concat(parts, ignore_index=True)
-                merged.to_csv(out_all, index=False)
-                st.success(f"Merged: {out_all}")
-                st.session_state["factors_classified_csv"] = str(out_all)
-        except Exception as e:
-            st.warning(f"Could not build merged factors file: {e}")
+            except Exception as e:
+                st.error(f"Could not build factors outputs: {e}")
 
 # Persistent preview for Step 2B (by Vignette Type)
 if "run_dir" in st.session_state:
@@ -803,6 +936,8 @@ if "run_dir" in st.session_state:
 
 st.divider()
 st.header("Step 3A — Extract Decisions")
+st.caption("Extracts decision options (decision_1, decision_2) from each vignette unless decisions are already provided in the uploaded file.")
+st.caption("If decisions were already provided, scroll down to Step 3B.")
 
 if "input_df" not in st.session_state:
     st.info("Upload a vignette file above to enable this step.")
@@ -814,7 +949,7 @@ else:
     with cols[0]:
         limit_on_dec = st.checkbox(
             "Process only the first N vignettes",
-            value=True,
+            value=False,
             key="limit_on_dec",
             disabled=decisions_present,
             help="When on, only the first N rows (vignettes) from the uploaded file are sent to the decision extractor."
@@ -890,124 +1025,164 @@ if "decisions_csv" in st.session_state:
 
 st.divider()
 st.header("Step 3B — Rate Decisions by Ethical Principles (by Vignette Type)")
+st.caption("Rates how each decision option promotes or counteracts each ethical principle, using the specified framework.")
+
+framework_mode = st.session_state.get("framework_mode", "auto")
 
 if "decisions_csv" not in st.session_state:
     st.info("Run the decision extractor first to enable this step.")
-elif "vignette_scope_csv" not in st.session_state:
-    st.info("Run Step 1 (Vignette Type) first to enable branching here.")
+elif framework_mode == "auto" and "vignette_scope_csv" not in st.session_state:
+    st.info("Run Step 1 (Vignette Type) first (Auto mode) to enable splitting here.")
 else:
     decisions_csv = st.session_state["decisions_csv"]
-    run_dir = Path(st.session_state["run_dir"])
-    decisions_dir = run_dir / "decisions"
 
-    # Output paths
+    run_dir = Path(st.session_state.get("run_dir", Path(base_out) / run_name))
+    st.session_state["run_dir"] = str(run_dir)
+    decisions_dir = run_dir / "decisions"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    decisions_dir.mkdir(parents=True, exist_ok=True)
+
     out_within = decisions_dir / "decisions_rated_within.csv"
     out_between = decisions_dir / "decisions_rated_between.csv"
     out_all = decisions_dir / "decisions_rated_all.csv"
 
-    # Controls
     cols = st.columns([1, 2])
     with cols[0]:
         n_runs = st.number_input("n_runs (per decision)", min_value=1, max_value=5, value=2, step=1, key="rate_n_runs")
     with cols[1]:
-        st.caption("Each branch runs only on its Vignette Type subset, joined by vignette_id.")
+        if framework_mode == "auto":
+            st.caption("Auto mode: will split by Step 1 (Within/Between) and run both raters.")
+        else:
+            st.caption("Single-framework mode: will run ONE rater on all vignettes (no splitting).")
 
-    if st.button("Run decision rater by Vignette Type", type="primary", disabled=(status != "success")):
-        # Lazy imports
-        from decisions_rater_withinpatient import run_decision_rater as run_decision_rater_within
-        from decisions_rater_betweenpatients import run_decision_rater as run_decision_rater_between
+    # SINGLE-FRAMEWORK MODE
+    if framework_mode != "auto":
+        if framework_mode == "within":
+            from decisions_rater_withinpatient import run_decision_rater as run_single
+            out_single = out_within
+            vignette_type_label = "WithinPatient"
+        else:
+            from decisions_rater_betweenpatients import run_decision_rater as run_single
+            out_single = out_between
+            vignette_type_label = "BetweenPatients"
 
-        with st.spinner("Preparing subsets…"):
-            scope_df = pd.read_csv(st.session_state["vignette_scope_csv"])[["vignette_id", "scope"]]
-            scope_df["vignette_id"] = scope_df["vignette_id"].astype(str)
+        run_btn = st.button(
+            f"Run decision rater ({vignette_type_label})",
+            type="primary",
+            disabled=(status != "success"),
+            key=f"btn_decisions_single_{framework_mode}",
+        )
 
-            dec_df = pd.read_csv(decisions_csv)
-            dec_df["vignette_id"] = dec_df["vignette_id"].astype(str)
-
-            joined = dec_df.merge(scope_df, on="vignette_id", how="inner")
-            within_df = joined[joined["scope"] == "WithinPatient"].copy()
-            between_df = joined[joined["scope"] == "BetweenPatients"].copy()
-
-            # Write subset inputs (wide) for the two branch calls
-            in_within = decisions_dir / "decisions_within_input.csv"
-            in_between = decisions_dir / "decisions_between_input.csv"
-            if len(within_df):
-                within_df.to_csv(in_within, index=False)
-            if len(between_df):
-                between_df.to_csv(in_between, index=False)
-
-        # Branch: WithinPatient
-        if len(within_df):
-            with st.spinner(f"Rating decisions (WithinPatient)… ({len(within_df):,} vignettes)"):
-                try:
-                    run_decision_rater_within(
-                        decisions_wide_csv=str(in_within),
-                        output_csv=str(out_within),
+        if run_btn:
+            try:
+                with st.spinner(f"Rating decisions ({vignette_type_label})…"):
+                    run_single(
+                        decisions_wide_csv=str(decisions_csv),
+                        output_csv=str(out_single),
                         n_runs=int(n_runs),
                         reset_files=True,
                     )
-                    # Enforce vignette-then-decision row order
+
+                tmp = pd.read_csv(out_single)
+                tmp = sort_vignette_then_decision(tmp)
+                tmp["Vignette Type"] = vignette_type_label
+                tmp.to_csv(out_single, index=False)
+                tmp.to_csv(out_all, index=False)
+
+                st.success(f"Wrote: {out_single}")
+                st.success(f"Merged (single framework): {out_all}")
+
+                if framework_mode == "within":
+                    st.session_state["decisions_rated_within_csv"] = str(out_single)
+                    st.session_state.pop("decisions_rated_between_csv", None)
+                else:
+                    st.session_state["decisions_rated_between_csv"] = str(out_single)
+                    st.session_state.pop("decisions_rated_within_csv", None)
+
+                st.session_state["decisions_rated_csv"] = str(out_all)
+
+            except Exception as e:
+                st.error(f"Decision rater failed: {e}")
+
+    # AUTO MODE (split by Step 1 output)
+    else:
+        if st.button("Run decision rater by Vignette Type", type="primary", disabled=(status != "success")):
+            try:
+                from decisions_rater_withinpatient import run_decision_rater as run_decision_rater_within
+                from decisions_rater_betweenpatients import run_decision_rater as run_decision_rater_between
+
+                with st.spinner("Preparing subsets…"):
+                    scope_df = pd.read_csv(st.session_state["vignette_scope_csv"], usecols=["vignette_id", "scope"], dtype={"vignette_id": str})
+                    dec_df = pd.read_csv(decisions_csv, dtype={"vignette_id": str})
+
+                    joined = dec_df.merge(scope_df, on="vignette_id", how="inner")
+                    within_df = joined[joined["scope"] == "WithinPatient"].copy()
+                    between_df = joined[joined["scope"] == "BetweenPatients"].copy()
+
+                    in_within = decisions_dir / "decisions_within_input.csv"
+                    in_between = decisions_dir / "decisions_between_input.csv"
+                    if len(within_df):
+                        within_df.to_csv(in_within, index=False)
+                    if len(between_df):
+                        between_df.to_csv(in_between, index=False)
+
+                if len(within_df):
+                    with st.spinner(f"Rating decisions (WithinPatient)… ({len(within_df):,} vignettes)"):
+                        run_decision_rater_within(
+                            decisions_wide_csv=str(in_within),
+                            output_csv=str(out_within),
+                            n_runs=int(n_runs),
+                            reset_files=True,
+                        )
                     _tmp = pd.read_csv(out_within)
                     _tmp = sort_vignette_then_decision(_tmp)
                     _tmp.to_csv(out_within, index=False)
-
                     st.success(f"Wrote: {out_within}")
                     st.session_state["decisions_rated_within_csv"] = str(out_within)
-                except Exception as e:
-                    st.error(f"WithinPatient rater failed: {e}")
-        else:
-            st.info("WithinPatient subset: 0 rows — skipped.")
+                else:
+                    st.info("WithinPatient subset: 0 rows — skipped.")
+                    st.session_state.pop("decisions_rated_within_csv", None)
 
-        # Branch: BetweenPatients
-        if len(between_df):
-            with st.spinner(f"Rating decisions (BetweenPatients)… ({len(between_df):,} vignettes)"):
-                try:
-                    run_decision_rater_between(
-                        decisions_wide_csv=str(in_between),
-                        output_csv=str(out_between),
-                        n_runs=int(n_runs),
-                        reset_files=True,
-                    )
-                    # Enforce vignette-then-decision row order
+                if len(between_df):
+                    with st.spinner(f"Rating decisions (BetweenPatients)… ({len(between_df):,} vignettes)"):
+                        run_decision_rater_between(
+                            decisions_wide_csv=str(in_between),
+                            output_csv=str(out_between),
+                            n_runs=int(n_runs),
+                            reset_files=True,
+                        )
                     _tmp = pd.read_csv(out_between)
                     _tmp = sort_vignette_then_decision(_tmp)
                     _tmp.to_csv(out_between, index=False)
-
                     st.success(f"Wrote: {out_between}")
                     st.session_state["decisions_rated_between_csv"] = str(out_between)
-                except Exception as e:
-                    st.error(f"BetweenPatients rater failed: {e}")
-        else:
-            st.info("BetweenPatients subset: 0 rows — skipped.")
+                else:
+                    st.info("BetweenPatients subset: 0 rows — skipped.")
+                    st.session_state.pop("decisions_rated_between_csv", None)
 
-        # Merge outputs (attach Vignette Type)
-        try:
-            parts = []
+                # Merge outputs
+                parts = []
+                scope_df2 = pd.read_csv(st.session_state["vignette_scope_csv"], usecols=["vignette_id", "scope"], dtype={"vignette_id": str})
 
-            scope_df = pd.read_csv(
-                st.session_state["vignette_scope_csv"],
-                usecols=["vignette_id", "scope"],
-                dtype={"vignette_id": str},
-            )
+                if out_within.exists():
+                    w = pd.read_csv(out_within, dtype={"vignette_id": str})
+                    w = w.merge(scope_df2, on="vignette_id", how="left").rename(columns={"scope": "Vignette Type"})
+                    parts.append(w)
 
-            if out_within.exists():
-                w = pd.read_csv(out_within, dtype={"vignette_id": str})
-                w = w.merge(scope_df, on="vignette_id", how="left").rename(columns={"scope": "Vignette Type"})
-                parts.append(w)
+                if out_between.exists():
+                    b = pd.read_csv(out_between, dtype={"vignette_id": str})
+                    b = b.merge(scope_df2, on="vignette_id", how="left").rename(columns={"scope": "Vignette Type"})
+                    parts.append(b)
 
-            if out_between.exists():
-                b = pd.read_csv(out_between, dtype={"vignette_id": str})
-                b = b.merge(scope_df, on="vignette_id", how="left").rename(columns={"scope": "Vignette Type"})
-                parts.append(b)
+                if parts:
+                    merged = pd.concat(parts, ignore_index=True)
+                    merged = sort_vignette_then_decision(merged)
+                    merged.to_csv(out_all, index=False)
+                    st.success(f"Merged: {out_all}")
+                    st.session_state["decisions_rated_csv"] = str(out_all)
 
-            if parts:
-                merged = pd.concat(parts, ignore_index=True)
-                merged = sort_vignette_then_decision(merged)
-                merged.to_csv(out_all, index=False)
-                st.success(f"Merged: {out_all}")
-                st.session_state["decisions_rated_csv"] = str(out_all)
-        except Exception as e:
-            st.warning(f"Could not build merged decisions file: {e}")
+            except Exception as e:
+                st.error(f"Decision rater failed: {e}")
 
 # Persistent preview for Step 3B (by Vignette Type)
 if "run_dir" in st.session_state:
@@ -1048,6 +1223,7 @@ if "run_dir" in st.session_state:
 # --- Build and Download Summary Workbook ---
 st.divider()
 st.header("Summary workbook (Excel)")
+st.caption("Builds a single Excel workbook that consolidates available outputs (vignette types, factors, decisions, ratings) into formatted sheets for review.")
 
 if "run_dir" not in st.session_state:
     st.info("Run at least one step to create a run folder, then you can build the summary workbook.")
@@ -1106,26 +1282,28 @@ with st.expander("Run Summary", expanded=True):
     cols[2].metric("Decision columns per vignette", f"{n_decision_cols:,}")
     cols[3].metric("Rated decisions (rows)", f"{n_rated:,}")
 
-# ======================
 # Tools — Consistency Checks (PerRun Likert only)
-# ======================
 st.divider()
 st.header("Tools")
-st.header("Consistency Checks")
+st.caption("Optional utilities for quality control and auditing of pipeline outputs.")
+st.subheader("Consistency Checks")
+st.caption("Runs multiple rating replicates and produces a color-coded PerRun_Likert workbook to assess rater stability across runs.")
+
+framework_mode = st.session_state.get("framework_mode", "auto")
 
 if "decisions_csv" not in st.session_state:
     st.info("Run Step 3A (Extract Decisions) first to enable consistency checks.")
-elif "vignette_scope_csv" not in st.session_state:
-    st.info("Run Step 1 (Vignette Type) first to split inputs by Within/Between.")
+elif framework_mode == "auto" and "vignette_scope_csv" not in st.session_state:
+    st.info("Run Step 1 (Vignette Type) first (Auto mode) to split inputs by Within/Between.")
 else:
-    run_dir = Path(st.session_state["run_dir"])
+    run_dir = Path(st.session_state.get("run_dir", Path(base_out) / run_name))
+    st.session_state["run_dir"] = str(run_dir)
+
     decisions_dir = run_dir / "decisions"
     decisions_dir.mkdir(parents=True, exist_ok=True)
 
     decisions_csv = st.session_state["decisions_csv"]
-    scope_csv = st.session_state["vignette_scope_csv"]
 
-    # Controls
     cols = st.columns([1, 2])
     with cols[0]:
         replicates = st.number_input(
@@ -1137,104 +1315,152 @@ else:
             help="How many separate full reruns of the rater to include in the PerRun sheet."
         )
     with cols[1]:
-        st.caption("This builds an XLSX with a single color-coded PerRun_Likert sheet.")
+        st.caption("Builds an XLSX with a single color-coded PerRun_Likert sheet.")
 
-    # Split inputs
-    with st.spinner("Preparing Within/Between inputs…"):
-        scope_df = pd.read_csv(scope_csv, usecols=["vignette_id", "scope"])
-        scope_df["vignette_id"] = scope_df["vignette_id"].astype(str)
+    # SINGLE-FRAMEWORK MODE
+    if framework_mode != "auto":
+        if framework_mode == "within":
+            from decisions_rater_withinpatient import run_decision_rater as rater_single
+            label = "WithinPatient"
+            run_prefix = "within"
+        else:
+            from decisions_rater_betweenpatients import run_decision_rater as rater_single
+            label = "BetweenPatients"
+            run_prefix = "between"
 
-        dec_df = pd.read_csv(decisions_csv)
-        dec_df["vignette_id"] = dec_df["vignette_id"].astype(str)
-
-        joined = dec_df.merge(scope_df, on="vignette_id", how="inner")
-        within_df = joined[joined["scope"] == "WithinPatient"].copy()
-        between_df = joined[joined["scope"] == "BetweenPatients"].copy()
-
-        in_within = decisions_dir / "decisions_within_input.csv"
-        in_between = decisions_dir / "decisions_between_input.csv"
-        if len(within_df):
-            within_df.to_csv(in_within, index=False)
-        if len(between_df):
-            between_df.to_csv(in_between, index=False)
-
-    # Buttons row
-    bcols = st.columns(2)
-    with bcols[0]:
-        run_within_btn = st.button(
-            "Run consistency — WithinPatient rater",
+        run_btn = st.button(
+            f"Run consistency — {label} rater",
             type="primary",
-            disabled=(status != "success" or len(within_df) == 0),
-            help="Runs the WithinPatient rater multiple times and builds a PerRun_Likert workbook."
-        )
-    with bcols[1]:
-        run_between_btn = st.button(
-            "Run consistency — BetweenPatients rater",
-            type="primary",
-            disabled=(status != "success" or len(between_df) == 0),
-            help="Runs the BetweenPatients rater multiple times and builds a PerRun_Likert workbook."
+            disabled=(status != "success"),
+            key=f"btn_consistency_single_{framework_mode}",
         )
 
-    # Actions
-    if run_within_btn:
-        try:
-            from tools_consistency_runner import run_replicates_and_build
-            from decisions_rater_withinpatient import run_decision_rater as rater_within
+        if run_btn:
+            try:
+                from tools_consistency_runner import run_replicates_and_build
 
-            with st.spinner(f"Running {int(replicates)} replicates (WithinPatient)…"):
-                xlsx_path, run_csvs = run_replicates_and_build(
-                    input_csv=str(in_within),
-                    rater_func=rater_within,
-                    replicates=int(replicates),
-                    out_dir=str(decisions_dir),
-                    run_prefix="within",
-                    n_runs_per_call=1,
-                    reset_files=True,
-                )
-            st.success(f"PerRun_Likert workbook (WithinPatient) ready: {xlsx_path}")
-            st.session_state["consistency_within_xlsx"] = xlsx_path
-        except Exception as e:
-            st.error(f"WithinPatient consistency run failed: {e}")
+                with st.spinner(f"Running {int(replicates)} replicates ({label})…"):
+                    xlsx_path, run_csvs = run_replicates_and_build(
+                        input_csv=str(decisions_csv),
+                        rater_func=rater_single,
+                        replicates=int(replicates),
+                        out_dir=str(decisions_dir),
+                        run_prefix=run_prefix,
+                        n_runs_per_call=1,
+                        reset_files=True,
+                    )
 
-    if run_between_btn:
-        try:
-            from tools_consistency_runner import run_replicates_and_build   
-            from decisions_rater_betweenpatients import run_decision_rater as rater_between
+                st.success(f"PerRun_Likert workbook ({label}) ready: {xlsx_path}")
+                st.session_state[f"consistency_{run_prefix}_xlsx"] = xlsx_path
 
-            with st.spinner(f"Running {int(replicates)} replicates (BetweenPatients)…"):
-                xlsx_path, run_csvs = run_replicates_and_build(
-                    input_csv=str(in_between),
-                    rater_func=rater_between,
-                    replicates=int(replicates),
-                    out_dir=str(decisions_dir),
-                    run_prefix="between",
-                    n_runs_per_call=1,
-                    reset_files=True,
-                )
-            st.success(f"PerRun_Likert workbook (BetweenPatients) ready: {xlsx_path}")
-            st.session_state["consistency_between_xlsx"] = xlsx_path
-        except Exception as e:
-            st.error(f"BetweenPatients consistency run failed: {e}")
+            except Exception as e:
+                st.error(f"{label} consistency run failed: {e}")
 
-    # Download buttons
-    dlcols = st.columns(2)
-    with dlcols[0]:
-        xp = st.session_state.get("consistency_within_xlsx")
+        xp = st.session_state.get(f"consistency_{run_prefix}_xlsx")
         if xp and Path(xp).exists():
             st.download_button(
-                "Download PerRun_Likert (WithinPatient)",
+                f"Download PerRun_Likert ({label})",
                 data=Path(xp).read_bytes(),
                 file_name=Path(xp).name,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_consistency_within",
+                key=f"dl_consistency_{run_prefix}",
             )
-    with dlcols[1]:
-        xp = st.session_state.get("consistency_between_xlsx")
-        if xp and Path(xp).exists():
-            st.download_button(
-                "Download PerRun_Likert (BetweenPatients)",
-                data=Path(xp).read_bytes(),
-                file_name=Path(xp).name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_consistency_between",
+
+    # AUTO MODE (split by scope)
+    else:
+        scope_csv = st.session_state["vignette_scope_csv"]
+
+        with st.spinner("Preparing Within/Between inputs…"):
+            scope_df = pd.read_csv(scope_csv, usecols=["vignette_id", "scope"], dtype={"vignette_id": str})
+            dec_df = pd.read_csv(decisions_csv, dtype={"vignette_id": str})
+
+            joined = dec_df.merge(scope_df, on="vignette_id", how="inner")
+            within_df = joined[joined["scope"] == "WithinPatient"].copy()
+            between_df = joined[joined["scope"] == "BetweenPatients"].copy()
+
+            in_within = decisions_dir / "decisions_within_input.csv"
+            in_between = decisions_dir / "decisions_between_input.csv"
+            if len(within_df):
+                within_df.to_csv(in_within, index=False)
+            if len(between_df):
+                between_df.to_csv(in_between, index=False)
+
+        bcols = st.columns(2)
+        with bcols[0]:
+            run_within_btn = st.button(
+                "Run consistency — WithinPatient rater",
+                type="primary",
+                disabled=(status != "success" or len(within_df) == 0),
             )
+        with bcols[1]:
+            run_between_btn = st.button(
+                "Run consistency — BetweenPatients rater",
+                type="primary",
+                disabled=(status != "success" or len(between_df) == 0),
+            )
+
+        if run_within_btn:
+            try:
+                from tools_consistency_runner import run_replicates_and_build
+                from decisions_rater_withinpatient import run_decision_rater as rater_within
+
+                with st.spinner(f"Running {int(replicates)} replicates (WithinPatient)…"):
+                    xlsx_path, run_csvs = run_replicates_and_build(
+                        input_csv=str(in_within),
+                        rater_func=rater_within,
+                        replicates=int(replicates),
+                        out_dir=str(decisions_dir),
+                        run_prefix="within",
+                        n_runs_per_call=1,
+                        reset_files=True,
+                    )
+
+                st.success(f"PerRun_Likert workbook (WithinPatient) ready: {xlsx_path}")
+                st.session_state["consistency_within_xlsx"] = xlsx_path
+
+            except Exception as e:
+                st.error(f"WithinPatient consistency run failed: {e}")
+
+        if run_between_btn:
+            try:
+                from tools_consistency_runner import run_replicates_and_build
+                from decisions_rater_betweenpatients import run_decision_rater as rater_between
+
+                with st.spinner(f"Running {int(replicates)} replicates (BetweenPatients)…"):
+                    xlsx_path, run_csvs = run_replicates_and_build(
+                        input_csv=str(in_between),
+                        rater_func=rater_between,
+                        replicates=int(replicates),
+                        out_dir=str(decisions_dir),
+                        run_prefix="between",
+                        n_runs_per_call=1,
+                        reset_files=True,
+                    )
+
+                st.success(f"PerRun_Likert workbook (BetweenPatients) ready: {xlsx_path}")
+                st.session_state["consistency_between_xlsx"] = xlsx_path
+
+            except Exception as e:
+                st.error(f"BetweenPatients consistency run failed: {e}")
+
+        dlcols = st.columns(2)
+        with dlcols[0]:
+            xp = st.session_state.get("consistency_within_xlsx")
+            if xp and Path(xp).exists():
+                st.download_button(
+                    "Download PerRun_Likert (WithinPatient)",
+                    data=Path(xp).read_bytes(),
+                    file_name=Path(xp).name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_consistency_within",
+                )
+        with dlcols[1]:
+            xp = st.session_state.get("consistency_between_xlsx")
+            if xp and Path(xp).exists():
+                st.download_button(
+                    "Download PerRun_Likert (BetweenPatients)",
+                    data=Path(xp).read_bytes(),
+                    file_name=Path(xp).name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_consistency_between",
+                )

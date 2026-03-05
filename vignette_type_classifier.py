@@ -131,16 +131,17 @@ def run_vignette_type_classifier(vignettes_csv: str, output_csv: str):
 
     _check_env()
     _args = _Args(vignettes_csv, output_csv)
-    try:
-        asyncio.run(main(_args))
-    except RuntimeError as e:
-        if "asyncio.run() cannot be called from a running event loop" in str(e):
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(main(_args))
-        else:
-            raise
-    return Path(output_csv)
 
-if __name__ == "__main__":
-    args = get_args()
-    asyncio.run(main(args))
+    # Streamlit often has an active event loop; run in a fresh thread in that case.
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(main(_args))
+        return Path(output_csv)
+
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(lambda: asyncio.run(main(_args)))
+        fut.result()
+
+    return Path(output_csv)
